@@ -585,14 +585,17 @@ class MainWindow(Adw.ApplicationWindow):
             return True
         selected = self.current.file_id if self.current else None
         items = []
-        paths = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in MEDIA_EXT]
-        paths.sort(key=file_created_at, reverse=True)
-        for p in paths:
+        skipped = 0
+        for p in root.iterdir():
             try:
+                if not p.is_file() or p.suffix.lower() not in MEDIA_EXT:
+                    continue
                 kind = "video" if p.suffix.lower() in VIDEO_EXT else "audio"
                 items.append(self.store.enrich(stable_file_id(p), p, kind, media_duration(p)))
             except Exception:
+                skipped += 1
                 continue
+        items.sort(key=lambda m: m.created_at, reverse=True)
         signature = tuple((m.file_id, str(m.path), m.kind, int(m.duration), int(m.created_at), bool(m.transcript)) for m in items)
         self.media = items
         if signature != self.scan_signature:
@@ -605,6 +608,8 @@ class MainWindow(Adw.ApplicationWindow):
         for fid, worker in list(self.active.items()):
             if not any(m.file_id == fid and m.path.exists() for m in self.media):
                 worker.cancel()
+        if skipped and not self.current:
+            self.status.set_text(f"Пропущено файлов при сканировании: {skipped}")
         return True
 
     def render_list(self, selected_id=None):
