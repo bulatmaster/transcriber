@@ -507,30 +507,45 @@ class MainWindow(Adw.ApplicationWindow):
             self.toast(str(exc))
 
     def build_transcript_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_vexpand(True)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
         self.transcript = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.transcript.set_vexpand(True)
         self.transcript.add_css_class("card")
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
         scroller.set_hexpand(True)
+        scroller.set_margin_top(12)
+        scroller.set_margin_bottom(12)
+        scroller.set_margin_start(12)
+        scroller.set_margin_end(12)
         scroller.set_child(self.transcript)
+
+        empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        empty.set_valign(Gtk.Align.CENTER)
+        empty.set_halign(Gtk.Align.CENTER)
+        empty.set_margin_top(24)
+        empty.set_margin_bottom(24)
+        empty.set_margin_start(24)
+        empty.set_margin_end(24)
         self.transcribe_btn = Gtk.Button(label="Транскрибировать")
         self.transcribe_btn.add_css_class("suggested-action")
         self.transcribe_btn.connect("clicked", lambda _b: self.start_current())
         self.main_progress = Gtk.ProgressBar()
         self.main_progress.set_visible(False)
+        self.main_progress.set_size_request(280, -1)
         self.status = Gtk.Label(xalign=0)
         self.status.add_css_class("dim-label")
-        box.append(scroller)
-        box.append(self.transcribe_btn)
-        box.append(self.main_progress)
-        box.append(self.status)
+        self.status.set_halign(Gtk.Align.CENTER)
+        empty.append(self.transcribe_btn)
+        empty.append(self.main_progress)
+        empty.append(self.status)
+
+        self.transcript_stack = Gtk.Stack()
+        self.transcript_stack.set_vexpand(True)
+        self.transcript_stack.add_named(scroller, "text")
+        self.transcript_stack.add_named(empty, "empty")
+        box.append(self.transcript_stack)
         return box
 
     def build_notes_tab(self):
@@ -617,11 +632,12 @@ class MainWindow(Adw.ApplicationWindow):
             self.player.load(self.current.path)
             self.current_loaded = self.current.path
         self.set_text(self.transcript, self.current.transcript or "")
-        self.transcribe_btn.set_visible(not bool(self.current.transcript))
         self.notes_blocked = True
         self.set_text(self.notes, self.current.notes or "")
         self.notes_blocked = False
         running = self.current.file_id in self.active
+        self.transcript_stack.set_visible_child_name("text" if self.current.transcript else "empty")
+        self.transcribe_btn.set_visible(not bool(self.current.transcript) and not running)
         self.main_progress.set_visible(running)
         self.status.set_text("транскрибация идет" if running else "")
 
@@ -667,6 +683,7 @@ class MainWindow(Adw.ApplicationWindow):
         if row:
             row.set_progress(value, label)
         if self.current and self.current.file_id == fid:
+            self.transcript_stack.set_visible_child_name("empty")
             self.main_progress.set_visible(True)
             self.main_progress.set_fraction(value / 100)
             self.status.set_text(label)
@@ -687,6 +704,7 @@ class MainWindow(Adw.ApplicationWindow):
             row.clear_progress()
         if self.current and self.current.file_id == fid:
             self.set_text(self.transcript, full_text)
+            self.transcript_stack.set_visible_child_name("text")
             self.main_progress.set_visible(False)
             self.status.set_text("готово")
             self.transcribe_btn.set_visible(False)
@@ -698,6 +716,7 @@ class MainWindow(Adw.ApplicationWindow):
         if row:
             row.clear_progress()
         if self.current and self.current.file_id == fid:
+            self.transcript_stack.set_visible_child_name("empty")
             self.main_progress.set_visible(False)
             self.status.set_text(error)
             self.transcribe_btn.set_visible(True)
