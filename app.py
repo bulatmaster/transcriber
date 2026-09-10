@@ -362,14 +362,17 @@ class MediaRow(Gtk.ListBoxRow):
         box.set_margin_bottom(10)
         box.set_margin_start(12)
         box.set_margin_end(12)
-        preview = Gtk.Picture()
-        preview.set_size_request(88, 52)
-        preview.add_css_class("thumb")
         thumb = thumbnail_path(media)
         if thumb:
+            preview = Gtk.Picture()
             preview.set_file(Gio.File.new_for_path(str(thumb)))
         else:
-            preview.set_icon_name("audio-x-generic-symbolic" if media.kind == "audio" else "video-x-generic-symbolic")
+            preview = Gtk.Image.new_from_icon_name(
+                "audio-x-generic-symbolic" if media.kind == "audio" else "video-x-generic-symbolic"
+            )
+            preview.set_pixel_size(32)
+        preview.set_size_request(88, 52)
+        preview.add_css_class("thumb")
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         text.append(self.title)
         text.append(self.meta)
