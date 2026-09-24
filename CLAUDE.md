@@ -7,7 +7,7 @@ This file is for future Claude Code sessions working in this repository.
 Repository path on this machine:
 
 ```text
-/home/bulat/Projects/transcriber
+/home/bulat/projects/tools/transcriber
 ```
 
 GitHub repository:
@@ -23,7 +23,7 @@ https://github.com/bulatmaster/transcriber
 Primary goals:
 
 - Feel like a native GNOME app.
-- Work locally without cloud transcription.
+- Transcribe locally; send only transcript text to OpenAI for one-sentence call summaries.
 - Avoid writing any service/intermediate files into the source media folder.
 - Keep transcripts and notes attached to files even if the original media file is renamed.
 - Be deployable on another Linux/GNOME machine from GitHub with `./install.sh`.
@@ -36,6 +36,7 @@ Primary goals:
 - `ffmpeg`/`ffprobe` for media metadata and extracting audio from video.
 - `faster-whisper` for local CPU transcription.
 - SQLite for local metadata, transcripts, settings and notes.
+- OpenAI Responses API with `gpt-5-nano` for short call summaries.
 
 Important implementation detail:
 
@@ -45,6 +46,7 @@ Important implementation detail:
 ## Important Files
 
 - `app.py` - main application code.
+- `summary.py` - OpenAI summary request and private API key handling.
 - `requirements.txt` - pip dependencies for the project venv.
 - `install.sh` - creates `.venv`, installs pip dependencies, installs GNOME desktop entry and icon.
 - `README.md` - user-facing installation, usage and troubleshooting docs.
@@ -113,8 +115,9 @@ python3 app.py
 Run these after code changes:
 
 ```bash
-python3 -m py_compile app.py
+python3 -m py_compile app.py summary.py
 python3 -c "import app; print('ok')"
+python3 -m unittest discover -s tests -v
 bash -n install.sh
 ```
 
@@ -140,7 +143,7 @@ ffprobe -version
 
 ## Current Architecture Notes
 
-`app.py` is intentionally a single-file app for now.
+The GTK application lives in `app.py`; the OpenAI integration is isolated in `summary.py`.
 
 Main pieces:
 
@@ -149,7 +152,7 @@ Main pieces:
 - `Transcriber`: background worker using `ffmpeg` and `faster-whisper`.
 - `Player`: GStreamer media preview widget with seek and speed controls.
 - `MediaRow`: one row in the left file list.
-- `MainWindow`: libadwaita window, file scanning, tabs, notes, context menu actions.
+- `MainWindow`: libadwaita window, file scanning, one-screen details, settings, notes, summaries and context menu actions.
 - `TranscriberApp`: application entry point and GNOME app id.
 
 ## File Scanning Behavior
@@ -203,33 +206,20 @@ The transcript saved to the database includes a header:
 
 Notes are saved automatically on `Gtk.TextBuffer.changed` and flushed again on window close. Keep this behavior: the user expects notes to persist while typing.
 
+Completed call summaries are stored separately in the database, prepended to notes without removing user text, and shown in the file list. The API key defaults to `~/keys/openai_key.txt`; a key entered in settings is stored under `~/.config/transcriber/` with private permissions. Never commit API keys or call transcripts.
+
 ## UI Notes
 
 - Use GTK4/libadwaita patterns, not Qt.
 - Follow the system light/dark theme; do not add a custom theme switcher unless explicitly requested.
-- Keep the tabs above the preview/content area.
-- The transcription action is centered on the `Расшифровка` tab when no transcript exists.
-- The file list is on the left; detail tabs are on the right.
+- Keep preview, transcript and notes visible together on the right, with at least four lines visible in each text field at the default window size.
+- Folder selection, automatic transcription and API key controls live in the settings window.
+- The file list is on the left; details are on the right.
 - Right-click context menu on a file includes transcribe/open transcript, rename, delete.
 
 ## Git/GitHub Workflow
 
-The user asked that updates also be pushed to GitHub.
-
-For future changes:
-
-```bash
-git status --short
-git diff
-python3 -m py_compile app.py
-python3 -c "import app; print('ok')"
-bash -n install.sh
-git add <changed-files>
-git commit -m "Concise commit message"
-git push
-```
-
-Only stage intended files. Do not commit `.venv`, `__pycache__`, local runtime data or generated media.
+Follow the commit-and-push rule in `AGENTS.md`. Do not commit `.venv`, `__pycache__`, local runtime data or generated media.
 
 ## Common Pitfalls
 
@@ -249,6 +239,6 @@ git remote -v
 Expected:
 
 ```text
-origin  https://github.com/bulatmaster/transcriber.git (fetch)
-origin  https://github.com/bulatmaster/transcriber.git (push)
+origin  git@github.com:bulatmaster/transcriber.git (fetch)
+origin  git@github.com:bulatmaster/transcriber.git (push)
 ```

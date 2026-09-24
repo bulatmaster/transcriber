@@ -24,6 +24,9 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 gi.require_version('Gst', '1.0')
 from gi.repository import Gtk, Adw, Gst
+Gst.init(None)
+if Gst.ElementFactory.find('scaletempo') is None:
+    raise SystemExit('Не найден GStreamer scaletempo (установите пакет plugins-good).')
 PY
 
 python3 -m venv "$VENV_DIR"

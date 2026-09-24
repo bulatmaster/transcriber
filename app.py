@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from summary import clear_custom_key, has_custom_key, read_api_key, save_api_key, summarize_call
+
 VENV_SITE = Path(__file__).resolve().parent / ".venv" / "lib"
 for site in VENV_SITE.glob("python*/site-packages"):
     sys.path.insert(0, str(site))
@@ -44,6 +46,7 @@ class MediaFile:
     created_at: float
     transcript: str
     notes: str
+    summary: str
 
 
 def ensure_dirs():
@@ -133,15 +136,19 @@ class Store:
                 duration real default 0,
                 transcript text default '',
                 notes text default '',
+                summary text default '',
                 updated_at real
             );
             create table if not exists settings(key text primary key, value text);
             """
         )
+        if "summary" not in {row[1] for row in self.conn.execute("pragma table_info(files)")}:
+            self.conn.execute("alter table files add column summary text default ''")
+            self.conn.commit()
 
     def enrich(self, file_id, path, kind, duration):
-        row = self.conn.execute("select transcript, notes from files where id=?", (file_id,)).fetchone()
-        transcript, notes = row if row else ("", "")
+        row = self.conn.execute("select transcript, notes, summary from files where id=?", (file_id,)).fetchone()
+        transcript, notes, summary = row if row else ("", "", "")
         self.conn.execute(
             """
             insert into files(id,last_path,kind,duration,transcript,notes,updated_at)
@@ -152,7 +159,7 @@ class Store:
             (file_id, str(path), kind, duration, transcript or "", notes or "", time.time()),
         )
         self.conn.commit()
-        return MediaFile(file_id, path, kind, duration, file_created_at(path), transcript or "", notes or "")
+        return MediaFile(file_id, path, kind, duration, file_created_at(path), transcript or "", notes or "", summary or "")
 
     def set_transcript(self, file_id, text):
         self.conn.execute("update files set transcript=?, updated_at=? where id=?", (text, time.time(), file_id))
@@ -161,6 +168,26 @@ class Store:
     def set_notes(self, file_id, text):
         self.conn.execute("update files set notes=?, updated_at=? where id=?", (text, time.time(), file_id))
         self.conn.commit()
+
+    def set_summary(self, file_id, summary):
+        row = self.conn.execute("select notes, summary from files where id=?", (file_id,)).fetchone()
+        if not row:
+            return ""
+        notes, old_summary = row
+        notes = notes or ""
+        if old_summary:
+            old_line = f"Саммари: {old_summary}"
+            if notes == old_line:
+                notes = ""
+            elif notes.startswith(old_line + "\n\n"):
+                notes = notes[len(old_line) + 2:]
+        notes = f"Саммари: {summary}\n\n{notes}" if notes else f"Саммари: {summary}"
+        self.conn.execute(
+            "update files set notes=?, summary=?, updated_at=? where id=?",
+            (notes, summary, time.time(), file_id),
+        )
+        self.conn.commit()
+        return notes
 
     def get_setting(self, key, default=""):
         row = self.conn.execute("select value from settings where key=?", (key,)).fetchone()
@@ -246,20 +273,26 @@ class Player(Gtk.Box):
     def __init__(self, show_in_folder):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.show_in_folder = show_in_folder
-        self.set_margin_top(12)
-        self.set_margin_bottom(12)
-        self.set_margin_start(12)
-        self.set_margin_end(12)
+        self.set_margin_top(4)
+        self.set_margin_bottom(4)
+        self.set_margin_start(4)
+        self.set_margin_end(4)
         Gst.init(None)
         self.rate = 1.0
         self.duration = 0
         self.updating_position = False
         self.pipeline = Gst.ElementFactory.make("playbin", "player")
+        self.tempo = Gst.ElementFactory.make("scaletempo", "voice-tempo")
+        if self.tempo is None:
+            raise RuntimeError("Для сохранения тональности голоса нужен плагин GStreamer scaletempo")
+        self.pipeline.set_property("audio-filter", self.tempo)
         self.sink = Gst.ElementFactory.make("gtk4paintablesink", "sink")
         self.pipeline.set_property("video-sink", self.sink)
         paintable = self.sink.get_property("paintable")
         self.picture = Gtk.Picture.new_for_paintable(paintable)
         self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.picture.set_size_request(-1, 190)
+        self.picture.set_vexpand(True)
         self.picture.add_css_class("viewer")
         self.append(self.picture)
 
@@ -287,6 +320,7 @@ class Player(Gtk.Box):
 
     def load(self, path: Path):
         self.pipeline.set_state(Gst.State.NULL)
+        self.picture.set_visible(path.suffix.lower() in VIDEO_EXT)
         self.duration = 0
         self.updating_position = True
         self.position.set_value(0)
@@ -352,9 +386,17 @@ class MediaRow(Gtk.ListBoxRow):
         self.progress = Gtk.ProgressBar()
         self.progress.set_visible(False)
         self.title = Gtk.Label(label=media.path.name, xalign=0)
+        self.title.set_ellipsize(3)
+        self.title.set_max_width_chars(34)
         self.title.add_css_class("heading")
         self.meta = Gtk.Label(xalign=0)
+        self.meta.set_ellipsize(3)
+        self.meta.set_max_width_chars(34)
         self.meta.add_css_class("dim-label")
+        self.summary_label = Gtk.Label(xalign=0)
+        self.summary_label.set_ellipsize(3)
+        self.summary_label.set_max_width_chars(34)
+        self.summary_label.set_single_line_mode(True)
         self.update_meta()
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -376,9 +418,11 @@ class MediaRow(Gtk.ListBoxRow):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         text.append(self.title)
         text.append(self.meta)
+        text.append(self.summary_label)
         text.append(self.progress)
         box.append(preview)
         box.append(text)
+        text.set_hexpand(True)
         self.set_child(box)
 
         click = Gtk.GestureClick(button=3)
@@ -388,6 +432,9 @@ class MediaRow(Gtk.ListBoxRow):
     def update_meta(self):
         status = "транскрибировано" if self.media.transcript else "нет расшифровки"
         self.meta.set_text(f"{self.media.kind} · {fmt_duration(self.media.duration)} · {fmt_datetime(self.media.created_at)} · {status}")
+        self.summary_label.set_text(self.media.summary)
+        self.summary_label.set_tooltip_text(self.media.summary or None)
+        self.summary_label.set_visible(bool(self.media.summary))
 
     def set_progress(self, value, label):
         self.progress.set_visible(True)
@@ -440,19 +487,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.current_loaded = None
         self.scan_signature = None
         self.notes_blocked = False
+        self.summaries_in_progress = set()
+        self.settings_window = None
+        self.folder_settings_row = None
         self.connect("close-request", self.on_close_request)
 
         header = Adw.HeaderBar()
-        self.folder_btn = Gtk.Button(label="Выбрать папку")
-        self.folder_btn.connect("clicked", self.choose_folder)
-        self.auto = Gtk.CheckButton(label="Авто")
-        self.auto.set_active(self.store.get_setting("auto", "0") == "1")
-        self.auto.connect("toggled", lambda b: self.store.set_setting("auto", "1" if b.get_active() else "0"))
-        header.pack_start(self.folder_btn)
-        header.pack_end(self.auto)
+        settings_btn = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Настройки")
+        settings_btn.connect("clicked", self.open_settings)
+        header.pack_end(settings_btn)
 
         self.folder_label = Gtk.Label(label=self.store.get_setting("folder", str(Path.home())))
         self.folder_label.set_ellipsize(3)
+        self.folder_label.set_max_width_chars(60)
         self.folder_label.add_css_class("dim-label")
         header.set_title_widget(self.folder_label)
 
@@ -474,19 +521,15 @@ class MainWindow(Adw.ApplicationWindow):
         scroller.set_margin_end(6)
         paned.set_start_child(scroller)
 
-        self.tabs = Adw.ViewStack()
-        self.tabs.add_titled_with_icon(self.build_preview_tab(), "preview", "Просмотр", "media-playback-start-symbolic")
-        self.tabs.add_titled_with_icon(self.build_transcript_tab(), "transcript", "Расшифровка", "text-x-generic-symbolic")
-        self.tabs.add_titled_with_icon(self.build_notes_tab(), "notes", "Заметки", "accessories-text-editor-symbolic")
-        self.tabs.set_vexpand(True)
-        switcher = Adw.ViewSwitcher(stack=self.tabs)
-        switcher.set_margin_top(8)
-        switcher.set_margin_bottom(4)
-        switcher.set_halign(Gtk.Align.CENTER)
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         content.set_vexpand(True)
-        content.append(switcher)
-        content.append(self.tabs)
+        content.set_margin_top(8)
+        content.set_margin_bottom(8)
+        content.set_margin_start(6)
+        content.set_margin_end(12)
+        content.append(self.build_preview_section())
+        content.append(self.build_transcript_section())
+        content.append(self.build_notes_section())
         paned.set_end_child(content)
         toolbar.set_content(paned)
         self.set_content(toolbar)
@@ -494,8 +537,9 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.timeout_add_seconds(5, self.scan)
         self.scan()
 
-    def build_preview_tab(self):
+    def build_preview_section(self):
         self.player = Player(self.show_current_in_folder)
+        self.player.set_vexpand(True)
         return self.player
 
     def show_current_in_folder(self):
@@ -509,55 +553,48 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:
             self.toast(str(exc))
 
-    def build_transcript_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    def build_transcript_section(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_vexpand(True)
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="Расшифровка", xalign=0)
+        title.add_css_class("heading")
+        toolbar.append(title)
         self.transcript = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.transcript.set_vexpand(True)
         self.transcript.add_css_class("card")
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
         scroller.set_hexpand(True)
-        scroller.set_margin_top(12)
-        scroller.set_margin_bottom(12)
-        scroller.set_margin_start(12)
-        scroller.set_margin_end(12)
+        scroller.set_min_content_height(112)
         scroller.set_child(self.transcript)
-
-        empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        empty.set_valign(Gtk.Align.CENTER)
-        empty.set_halign(Gtk.Align.CENTER)
-        empty.set_margin_top(24)
-        empty.set_margin_bottom(24)
-        empty.set_margin_start(24)
-        empty.set_margin_end(24)
         self.transcribe_btn = Gtk.Button(label="Транскрибировать")
         self.transcribe_btn.add_css_class("suggested-action")
         self.transcribe_btn.connect("clicked", lambda _b: self.start_current())
         self.main_progress = Gtk.ProgressBar()
         self.main_progress.set_visible(False)
-        self.main_progress.set_size_request(280, -1)
+        self.main_progress.set_size_request(100, -1)
         self.status = Gtk.Label(xalign=0)
         self.status.add_css_class("dim-label")
-        self.status.set_halign(Gtk.Align.CENTER)
-        empty.append(self.transcribe_btn)
-        empty.append(self.main_progress)
-        empty.append(self.status)
-
-        self.transcript_stack = Gtk.Stack()
-        self.transcript_stack.set_vexpand(True)
-        self.transcript_stack.add_named(scroller, "text")
-        self.transcript_stack.add_named(empty, "empty")
-        box.append(self.transcript_stack)
+        self.status.set_ellipsize(3)
+        self.status.set_hexpand(True)
+        toolbar.append(self.transcribe_btn)
+        toolbar.append(self.main_progress)
+        toolbar.append(self.status)
+        box.append(toolbar)
+        box.append(scroller)
         return box
 
-    def build_notes_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    def build_notes_section(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_vexpand(True)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(label="Заметки", xalign=0)
+        title.add_css_class("heading")
+        toolbar.append(title)
+        self.summary_btn = Gtk.Button(label="Создать саммари")
+        self.summary_btn.connect("clicked", lambda _b: self.start_current_summary())
+        toolbar.append(self.summary_btn)
         self.notes = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR)
         self.notes.set_vexpand(True)
         self.notes.add_css_class("card")
@@ -565,13 +602,109 @@ class MainWindow(Adw.ApplicationWindow):
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
         scroller.set_hexpand(True)
+        scroller.set_min_content_height(112)
         scroller.set_child(self.notes)
+        box.append(toolbar)
         box.append(scroller)
         return box
 
+    def open_settings(self, _button=None):
+        if self.settings_window:
+            self.settings_window.present()
+            return
+        window = Adw.PreferencesWindow(transient_for=self, title="Настройки")
+        window.set_default_size(600, 420)
+        window.connect("close-request", self.on_settings_close)
+        page = Adw.PreferencesPage()
+
+        media_group = Adw.PreferencesGroup(title="Записи")
+        folder_row = Adw.ActionRow(title="Папка записей", subtitle=self.store.get_setting("folder", str(Path.home())))
+        folder_btn = Gtk.Button(label="Выбрать")
+        folder_btn.set_valign(Gtk.Align.CENTER)
+        folder_btn.connect("clicked", self.choose_folder)
+        folder_row.add_suffix(folder_btn)
+        media_group.add(folder_row)
+        self.folder_settings_row = folder_row
+
+        auto_row = Adw.ActionRow(title="Автоматически транскрибировать новые записи")
+        auto_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        auto_switch.set_active(self.store.get_setting("auto", "0") == "1")
+        auto_switch.connect("notify::active", self.on_auto_toggled)
+        auto_row.add_suffix(auto_switch)
+        auto_row.set_activatable_widget(auto_switch)
+        media_group.add(auto_row)
+        page.add(media_group)
+
+        key_group = Adw.PreferencesGroup(
+            title="Саммари OpenAI",
+            description="После локальной транскрибации в OpenAI отправляется только текст расшифровки.",
+        )
+        key_row = Adw.ActionRow(title="Ключ OpenAI API")
+        self.key_entry = Gtk.PasswordEntry(placeholder_text="Вставьте новый ключ")
+        self.key_entry.set_size_request(240, -1)
+        self.key_entry.set_valign(Gtk.Align.CENTER)
+        key_row.add_suffix(self.key_entry)
+        key_group.add(key_row)
+        self.key_status_row = Adw.ActionRow(title="Источник ключа")
+        key_group.add(self.key_status_row)
+        key_actions = Adw.ActionRow()
+        save_btn = Gtk.Button(label="Сохранить ключ")
+        save_btn.add_css_class("suggested-action")
+        save_btn.set_valign(Gtk.Align.CENTER)
+        save_btn.connect("clicked", self.on_save_key)
+        reset_btn = Gtk.Button(label="Использовать ключ из ~/keys")
+        reset_btn.set_valign(Gtk.Align.CENTER)
+        reset_btn.connect("clicked", self.on_reset_key)
+        key_actions.add_suffix(reset_btn)
+        key_actions.add_suffix(save_btn)
+        key_group.add(key_actions)
+        page.add(key_group)
+        window.add(page)
+        self.settings_window = window
+        self.update_key_status()
+        window.present()
+
+    def on_settings_close(self, _window):
+        self.settings_window = None
+        self.folder_settings_row = None
+        return False
+
+    def update_key_status(self):
+        if has_custom_key():
+            source = "Сохранён в настройках приложения"
+        elif read_api_key():
+            source = "~/keys/openai_key.txt"
+        else:
+            source = "Ключ не задан"
+        self.key_status_row.set_subtitle(source)
+
+    def on_save_key(self, _button):
+        try:
+            save_api_key(self.key_entry.get_text())
+        except (OSError, ValueError) as exc:
+            self.toast(str(exc))
+            return
+        self.key_entry.set_text("")
+        self.update_key_status()
+
+    def on_reset_key(self, _button):
+        try:
+            clear_custom_key()
+        except OSError as exc:
+            self.toast(str(exc))
+            return
+        self.key_entry.set_text("")
+        self.update_key_status()
+
+    def on_auto_toggled(self, switch, _param):
+        enabled = switch.get_active()
+        self.store.set_setting("auto", "1" if enabled else "0")
+        if enabled:
+            self.scan()
+
     def choose_folder(self, _button):
         dialog = Gtk.FileDialog(title="Выберите папку")
-        dialog.select_folder(self, None, self.on_folder_chosen)
+        dialog.select_folder(self.settings_window or self, None, self.on_folder_chosen)
 
     def on_folder_chosen(self, dialog, result):
         try:
@@ -580,6 +713,8 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self.store.set_setting("folder", folder)
         self.folder_label.set_text(folder)
+        if self.folder_settings_row:
+            self.folder_settings_row.set_subtitle(folder)
         self.scan()
 
     def scan(self):
@@ -599,12 +734,12 @@ class MainWindow(Adw.ApplicationWindow):
                 skipped += 1
                 continue
         items.sort(key=lambda m: m.created_at, reverse=True)
-        signature = tuple((m.file_id, str(m.path), m.kind, int(m.duration), int(m.created_at), bool(m.transcript)) for m in items)
+        signature = tuple((m.file_id, str(m.path), m.kind, int(m.duration), int(m.created_at), bool(m.transcript), m.summary) for m in items)
         self.media = items
         if signature != self.scan_signature:
             self.scan_signature = signature
             self.render_list(selected)
-        if self.auto.get_active():
+        if self.store.get_setting("auto", "0") == "1":
             for mf in self.media:
                 if not mf.transcript and mf.file_id not in self.active:
                     self.start_transcription(mf)
@@ -644,10 +779,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_text(self.notes, self.current.notes or "")
         self.notes_blocked = False
         running = self.current.file_id in self.active
-        self.transcript_stack.set_visible_child_name("text" if self.current.transcript else "empty")
         self.transcribe_btn.set_visible(not bool(self.current.transcript) and not running)
         self.main_progress.set_visible(running)
         self.status.set_text("транскрибация идет" if running else "")
+        self.update_summary_button()
+
+    def update_summary_button(self):
+        self.summary_btn.set_visible(bool(
+            self.current and self.current.transcript and not self.current.summary
+            and self.current.file_id not in self.summaries_in_progress
+        ))
 
     def set_text(self, text_view, value):
         text_view.get_buffer().set_text(value)
@@ -670,7 +811,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not self.current:
             return
         if self.current.transcript:
-            self.tabs.set_visible_child_name("transcript")
+            self.transcript.grab_focus()
         else:
             self.start_current()
 
@@ -691,7 +832,6 @@ class MainWindow(Adw.ApplicationWindow):
         if row:
             row.set_progress(value, label)
         if self.current and self.current.file_id == fid:
-            self.transcript_stack.set_visible_child_name("empty")
             self.main_progress.set_visible(True)
             self.main_progress.set_fraction(value / 100)
             self.status.set_text(label)
@@ -712,10 +852,12 @@ class MainWindow(Adw.ApplicationWindow):
             row.clear_progress()
         if self.current and self.current.file_id == fid:
             self.set_text(self.transcript, full_text)
-            self.transcript_stack.set_visible_child_name("text")
             self.main_progress.set_visible(False)
             self.status.set_text("готово")
             self.transcribe_btn.set_visible(False)
+            self.update_summary_button()
+        if text.strip() and media:
+            self.start_summary(media, text)
         return False
 
     def on_failed(self, fid, error):
@@ -724,10 +866,67 @@ class MainWindow(Adw.ApplicationWindow):
         if row:
             row.clear_progress()
         if self.current and self.current.file_id == fid:
-            self.transcript_stack.set_visible_child_name("empty")
             self.main_progress.set_visible(False)
             self.status.set_text(error)
             self.transcribe_btn.set_visible(True)
+        return False
+
+    def start_current_summary(self):
+        if self.current and self.current.transcript:
+            body = self.current.transcript
+            if body.startswith("Расшифровка ("):
+                body = body.split("\n\n", 1)[-1]
+            self.start_summary(self.current, body)
+
+    def start_summary(self, media, text):
+        fid = media.file_id
+        if fid in self.summaries_in_progress or media.summary:
+            return
+        if not read_api_key():
+            if self.current and self.current.file_id == fid:
+                self.status.set_text("Добавьте ключ OpenAI в настройках")
+            return
+        self.summaries_in_progress.add(fid)
+        if self.current and self.current.file_id == fid:
+            self.status.set_text("создание саммари")
+            self.update_summary_button()
+        threading.Thread(target=self.summarize_in_background, args=(fid, text), daemon=True).start()
+
+    def summarize_in_background(self, fid, text):
+        try:
+            summary = summarize_call(text)
+        except Exception as exc:
+            GLib.idle_add(self.on_summary_failed, fid, str(exc))
+        else:
+            GLib.idle_add(self.on_summary_done, fid, summary)
+
+    def on_summary_done(self, fid, summary):
+        self.summaries_in_progress.discard(fid)
+        notes = self.store.set_summary(fid, summary)
+        for media in self.media:
+            if media.file_id == fid:
+                media.summary = summary
+                media.notes = notes
+        row = self.rows.get(fid)
+        if row:
+            row.media.summary = summary
+            row.media.notes = notes
+            row.update_meta()
+        if self.current and self.current.file_id == fid:
+            self.current.summary = summary
+            self.current.notes = notes
+            self.notes_blocked = True
+            self.set_text(self.notes, notes)
+            self.notes_blocked = False
+            self.status.set_text("готово")
+            self.update_summary_button()
+        return False
+
+    def on_summary_failed(self, fid, error):
+        self.summaries_in_progress.discard(fid)
+        if self.current and self.current.file_id == fid:
+            self.status.set_text(f"Саммари не создано: {error}")
+            self.update_summary_button()
         return False
 
     def rename_current(self):
@@ -807,10 +1006,10 @@ class TranscriberApp(Adw.Application):
         css = Gtk.CssProvider()
         css.load_from_data(
             b"""
-            .viewer { background: black; border-radius: 18px; min-height: 360px; }
+            .viewer { background: black; border-radius: 12px; }
             .toolbar-card { padding: 8px; border-radius: 12px; background: alpha(currentColor, .06); }
             .thumb { border-radius: 10px; background: alpha(currentColor, .07); }
-            textview.card { padding: 12px; border-radius: 12px; }
+            textview.card { padding: 8px; border-radius: 12px; }
             """
         )
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
