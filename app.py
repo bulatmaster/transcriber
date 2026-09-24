@@ -31,7 +31,7 @@ AUDIO_DIR = APP_DIR / "audio"
 THUMB_DIR = APP_DIR / "thumbs"
 
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
-AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
+AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma", ".amr"}
 MEDIA_EXT = VIDEO_EXT | AUDIO_EXT
 
 
