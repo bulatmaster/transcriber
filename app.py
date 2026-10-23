@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,6 +121,18 @@ def thumbnail_path(media: MediaFile) -> Path | None:
             stderr=subprocess.DEVNULL,
         )
     return thumb if thumb.exists() else None
+
+
+def load_wav(path: Path):
+    # Read our ffmpeg-made WAV directly: faster-whisper's own decoder relies on PyAV,
+    # whose API breaks between releases (av 19 dropped open(metadata_errors=...)).
+    import numpy as np
+
+    with wave.open(str(path), "rb") as f:
+        if f.getnchannels() != 1 or f.getsampwidth() != 2 or f.getframerate() != 16000:
+            raise RuntimeError("неожиданный формат извлеченного аудио")
+        data = f.readframes(f.getnframes())
+    return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 class Store:
@@ -246,7 +259,7 @@ class Transcriber:
             model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=max(1, min(4, os.cpu_count() or 2)))
             self.progress(25, "транскрибация")
             segments, _ = model.transcribe(
-                str(audio),
+                load_wav(audio),
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 600, "speech_pad_ms": 250},
                 beam_size=1,
