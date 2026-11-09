@@ -12,10 +12,8 @@ class SummaryTests(unittest.TestCase):
     def test_custom_key_overrides_default_and_is_private(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            default = root / "default_key"
             custom = root / "config" / "openai_api_key"
-            default.write_text("default-key\n")
-            with patch.object(summary, "DEFAULT_KEY_PATH", default), patch.object(summary, "CUSTOM_KEY_PATH", custom):
+            with patch.object(summary, "read_rbw_key", return_value="default-key"), patch.object(summary, "CUSTOM_KEY_PATH", custom):
                 self.assertEqual(summary.read_api_key(), "default-key")
                 summary.save_api_key("  custom-key  ")
                 self.assertEqual(summary.read_api_key(), "custom-key")

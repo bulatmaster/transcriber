@@ -686,7 +686,7 @@ class MainWindow(Adw.ApplicationWindow):
         if has_custom_key():
             source = "Сохранён в настройках приложения"
         elif read_api_key():
-            source = "~/keys/openai_key.txt"
+            source = "rbw: OpenAI API key"
         else:
             source = "Ключ не задан"
         self.key_status_row.set_subtitle(source)

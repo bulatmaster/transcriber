@@ -206,7 +206,7 @@ The transcript saved to the database includes a header:
 
 Notes are saved automatically on `Gtk.TextBuffer.changed` and flushed again on window close. Keep this behavior: the user expects notes to persist while typing.
 
-Completed call summaries are stored separately in the database, prepended to notes without removing user text, and shown in the file list. The API key defaults to `~/keys/openai_key.txt`; a key entered in settings is stored under `~/.config/transcriber/` with private permissions. Never commit API keys or call transcripts.
+Completed call summaries are stored separately in the database, prepended to notes without removing user text, and shown in the file list. The API key defaults to `rbw get "OpenAI API key"` (personal Bitwarden; `~/keys/openai_key.txt` is gone since 2026-11-09); a key entered in settings is stored under `~/.config/transcriber/` with private permissions. Never commit API keys or call transcripts.
 
 ## UI Notes
 

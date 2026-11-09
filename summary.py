@@ -2,25 +2,31 @@
 
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from urllib import error, request
 
 
-DEFAULT_KEY_PATH = Path.home() / "keys" / "openai_key.txt"
+RBW_ENTRY = "OpenAI API key"  # личный Bitwarden; до 09.11.26 ключ лежал в ~/keys/openai_key.txt
 CUSTOM_KEY_PATH = Path.home() / ".config" / "transcriber" / "openai_api_key"
 MODEL = "gpt-5-nano"
 
 
 def read_api_key():
-    for path in (CUSTOM_KEY_PATH, DEFAULT_KEY_PATH):
-        try:
-            key = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if key:
-            return key
-    return ""
+    try:
+        key = CUSTOM_KEY_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        key = ""
+    return key or read_rbw_key()
+
+
+def read_rbw_key():
+    try:
+        result = subprocess.run(["rbw", "get", RBW_ENTRY], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def has_custom_key():
